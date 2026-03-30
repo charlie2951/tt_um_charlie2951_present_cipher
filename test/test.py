@@ -3,38 +3,52 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import Timer, RisingEdge
 
+# Helper to pack bits for uio_in
+def pack_uio(key, start, enc_dec):
+    return (enc_dec << 7) | (start << 6) | (key & 0x3F)
 
 @cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
-
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+async def crypto_test_with_assertions(dut):
+    # Start Clock
+    cocotb.start_soon(Clock(dut.clk, 10, units="ns").start())
 
     # Reset
-    dut._log.info("Reset")
-    dut.ena.value = 1
-    dut.ui_in.value = 0
-    dut.uio_in.value = 0
     dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+    dut.ena.value = 1
+    await Timer(100, units="ns")
     dut.rst_n.value = 1
+    await RisingEdge(dut.clk)
 
-    dut._log.info("Test project behavior")
+    # Define Test Cases (Input, Key, Start, Enc_Dec, Expected Output)
+    # Note: Replace '0x??' with your actual expected hardware output
+    test_cases = [
+        {"ui": 0xDF, "key": 0b010010, "start": 1, "ed": 1, "expected": 0x61}, # Enc 1
+        {"ui": 0x6A, "key": 0b11001,  "start": 1, "ed": 1, "expected": 0x8F}, # Enc 2
+        {"ui": 0x61, "key": 0b010010, "start": 1, "ed": 0, "expected": 0xDF}, # Dec 1
+    ]
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+    for test in test_cases:
+        # Drive signals
+        dut.ui_in.value = test["ui"]
+        dut.uio_in.value = pack_uio(test["key"], test["start"], test["ed"])
+        
+        # Wait for logic to process (match Verilog #200)
+        await Timer(200, units="ns")
+        
+        # Capture the actual output
+        actual_out = int(dut.uo_out.value)
+        
+        # Automated Assertion
+        assert actual_out == test["expected"], \
+            f"FAIL: Input {hex(test['ui'])} with key {bin(test['key'])} " \
+            f"Expected {hex(test['expected'])}, Got {hex(actual_out)}"
+        
+        dut._log.info(f"PASS: Input {hex(test['ui'])} -> Output {hex(actual_out)}")
 
-    # Wait for one clock cycle to see the output values
-    await ClockCycles(dut.clk, 1)
+        # Reset start signal for next iteration
+        dut.uio_in.value = pack_uio(test["key"], 0, test["ed"])
+        await Timer(10, units="ns")
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-   # assert dut.uo_out.value == 50
-
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    dut._log.info("All crypto tests passed successfully!")
